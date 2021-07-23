@@ -8,7 +8,8 @@ import shlex
 
 from doodad.utils import shell
 from doodad.utils import safe_import
-from doodad import mount
+from doodad.utils.cmd_builder import CommandBuilder
+from doodad.mount import MountLocal
 from doodad.apis.ec2.autoconfig import Autoconfig
 from doodad.credentials.ec2 import AWSCredentials
 
@@ -413,6 +414,7 @@ class GCPMode(LaunchMode):
                  gcp_log_path,
                  gcp_image='ubuntu-1804-bionic-v20181222',
                  gcp_image_project='ubuntu-os-cloud',
+                 singularity_image='',
                  disk_size=64,
                  terminate_on_end=True,
                  preemptible=True,
@@ -429,6 +431,7 @@ class GCPMode(LaunchMode):
         self.gcp_log_path = gcp_log_path
         self.gce_image = gcp_image
         self.gce_image_project = gcp_image_project
+        self.singularity_image = singularity_image
         self.disk_size = disk_size
         self.terminate_on_end = terminate_on_end
         self.preemptible = preemptible
@@ -950,4 +953,58 @@ class AzureMode(LaunchMode):
 
 def b64e(s):
     return base64.b64encode(s.encode()).decode()
+
+
+class SingularityMode(LaunchMode):
+    def __init__(self, image, gpu=False, pre_cmd=None,
+                 post_cmd=None, extra_args='',
+                 verbose_cmd=False):
+        super(SingularityMode, self).__init__()
+        self.singularity_image = image
+        self.gpu = gpu
+        self.pre_cmd = pre_cmd
+        self.post_cmd = post_cmd
+        self._extra_args = extra_args
+        self._verbose_cmd = verbose_cmd
+
+    def create_singularity_cmd(
+            self,
+            main_cmd,
+            mount_points=None,
+    ):
+        extra_args = self._extra_args
+        cmd_list = CommandBuilder()
+        if self.pre_cmd:
+            cmd_list.extend(self.pre_cmd)
+
+        if self._verbose_cmd:
+            if self.gpu:
+                cmd_list.append('echo \"Running in singularity (gpu)\"')
+            else:
+                cmd_list.append('echo \"Running in singularity\"')
+
+        py_paths = []
+        for mount in mount_points:
+            if isinstance(mount, MountLocal):
+                if mount.pythonpath:
+                    py_paths.append(mount.local_dir)
+            else:
+                raise NotImplementedError(type(mount))
+        if py_paths:
+            cmd_list.append('export PYTHONPATH=$PYTHONPATH:%s' % (
+                ':'.join(py_paths)))
+
+        cmd_list.append(main_cmd)
+        if self.post_cmd:
+            cmd_list.extend(self.post_cmd)
+
+        if self.gpu:
+            extra_args += ' --nv '
+        singularity_prefix = 'singularity exec %s %s /bin/bash -c ' % (
+            extra_args,
+            self.singularity_image,
+        )
+        main_cmd = cmd_list.to_string()
+        full_cmd = singularity_prefix + ("\'%s\'" % main_cmd)
+        return full_cmd
 
